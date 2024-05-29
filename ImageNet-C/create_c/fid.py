@@ -79,6 +79,7 @@ if __name__ == "__main__":
 
     #save_image(corrupted_batch, "img.png")
 
+    fids = []
     for _ in range(len(corrupted_data_loader)-1):
         original_batch = next(iter(original_data_loader))
         corrupted_batch = next(iter(corrupted_data_loader))
@@ -89,4 +90,8 @@ if __name__ == "__main__":
         fid.update(original_batch, real=True)
         fid.update(corrupted_batch, real=False)
         fid_value = fid.compute()
+        fids.append(fid_value.item())
         print(fid_value)
+    
+    mean_fid = sum(fids) / len(fids)
+    print("FID: ", mean_fid)
