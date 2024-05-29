@@ -11,18 +11,17 @@ import os
 
 
 class Read_Dataset(data.Dataset):
-    def __init__(self, root, avoid_subfolder, transform=True):
+    def __init__(self, root, avoid_subfolder=None, transform=True):
         self.root = root
         self.transform = transform
-        self.avoid_subfolder = os.path.abspath(avoid_subfolder)
+        self.avoid_subfolder = os.path.abspath(avoid_subfolder) if avoid_subfolder is not None else None
         self.resize = transforms.Resize((640, 640))
         self.pil_to_tensor = transforms.PILToTensor()
 
-        # self.image_paths = [os.path.join(root, f) for f in os.listdir(root) if os.path.isfile(os.path.join(root, f))]
         # avoid subfolder
         self.image_paths = []
         for dirpath, _, filenames in os.walk(root):
-            if self.avoid_subfolder in os.path.abspath(dirpath):
+            if self.avoid_subfolder and self.avoid_subfolder in os.path.abspath(dirpath):
                 continue
             for filename in filenames:
                 if filename.lower().endswith(('png', 'jpg', 'jpeg')):
@@ -56,30 +55,38 @@ if __name__ == "__main__":
     _ = torch.manual_seed(123)
     fid = FrechetInceptionDistance(feature=64)
 
-    dataset = Read_Dataset(
-        root="/home/e3da/code/robustness/ImageNet-C/create_c/corrupted_dataset",
-        avoid_subfolder="/home/e3da/code/robustness/ImageNet-C/create_c/corrupted_dataset/val2012",
+    original_dataset = Read_Dataset(
+        root="/home/e3da/code/validate_robustness/recipes/object_detection/datasets/VOC/images",
+        avoid_subfolder="/home/e3da/code/validate_robustness/recipes/object_detection/datasets/VOC/images/VOCdevkit",
+    )
+    corrupted_dataset = Read_Dataset(
+        root="/home/e3da/code/validate_robustness/recipes/object_detection/datasets/corruptedVOC/images",
+        avoid_subfolder=None,
     )
 
-    data_loader = data.DataLoader(
-        dataset, batch_size=8, shuffle=True, num_workers=4
+    original_data_loader = data.DataLoader(
+        original_dataset, batch_size=100, shuffle=True, num_workers=4
+    )
+    corrupted_data_loader = data.DataLoader(
+        corrupted_dataset, batch_size=100, shuffle=True, num_workers=4
     )
 
-    for img in data_loader:
-        image = img
-        print(img.shape)
-        break
+    original_batch = next(iter(original_data_loader))
+    corrupted_batch = next(iter(corrupted_data_loader))
+    print("batch shape original: ", original_batch.shape)
+    print("batch shape original: ", corrupted_batch.shape)
+    print("numero batch nel data loader: ", len(original_data_loader))
 
-    save_image(image, "img.png")
+    #save_image(corrupted_batch, "img.png")
 
-    breakpoint()
+    for _ in range(len(corrupted_data_loader)-1):
+        original_batch = next(iter(original_data_loader))
+        corrupted_batch = next(iter(corrupted_data_loader))
 
-    # generate two slightly overlapping image intensity distributions
-    imgs_dist1 = torch.randint(0, 200, (100, 3, 299, 299), dtype=torch.uint8)
-    imgs_dist2 = torch.randint(100, 255, (100, 3, 299, 299), dtype=torch.uint8)
-    breakpoint()
-    fid.update(imgs_dist1, real=True)
-    fid.update(imgs_dist2, real=False)
-    fid_value = fid.compute()
-    print(fid_value)
-    breakpoint()
+        original_batch = (original_batch * 255).to(torch.uint8)
+        corrupted_batch = (corrupted_batch * 255).to(torch.uint8)
+
+        fid.update(original_batch, real=True)
+        fid.update(corrupted_batch, real=False)
+        fid_value = fid.compute()
+        print(fid_value)
