@@ -2,15 +2,14 @@ import os
 import random
 from PIL import Image
 import os.path
-import time
 import torch
 import torchvision
-import torchvision.datasets as dset
 import torchvision.transforms as trn
+from torchvision.utils import save_image
 import torch.utils.data as data
 import numpy as np
-import collections
 import PIL
+import collections
 from corruptions import (
     gaussian_noise,
     shot_noise,
@@ -29,6 +28,11 @@ from corruptions import (
 
 IMG_SIZE = 640
 IMG_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.ppm', '.bmp', '.pgm']
+
+from torchmetrics.image.fid import FrechetInceptionDistance
+import torchvision.transforms as transforms
+import torch.nn.functional as F
+
 
 
 def is_image_file(filename):
@@ -86,13 +90,55 @@ def default_loader(path):
         return pil_loader(path)
 
 
+class Read_Dataset(data.Dataset):
+    def __init__(self, root, avoid_subfolder=None, transform=True):
+        self.root = root
+        self.transform = transform
+        self.avoid_subfolder = os.path.abspath(avoid_subfolder) if avoid_subfolder is not None else None
+        self.resize = transforms.Resize((640, 640))
+        self.pil_to_tensor = transforms.PILToTensor()
+
+        # avoid subfolder
+        self.image_paths = []
+        for dirpath, _, filenames in os.walk(root):
+            if self.avoid_subfolder and self.avoid_subfolder in os.path.abspath(dirpath):
+                continue
+            for filename in filenames:
+                if filename.lower().endswith(('png', 'jpg', 'jpeg')):
+                    self.image_paths.append(os.path.join(dirpath, filename))
+        
+
+    def __len__(self):
+        return len(self.image_paths)
+
+    def __getitem__(self, idx):
+        image_path = self.image_paths[idx]
+        image = Image.open(image_path).convert('RGB')
+
+        if self.transform:
+
+            h, w = image.size
+            if h < w: # se verticale
+                padding = ((w - h) // 2, (w - h) - (w - h) // 2, 0, 0)
+            else:     # se orizzontale
+                padding = (0, 0, (h - w) // 2, (h - w) - (h - w) // 2)
+
+            image = self.pil_to_tensor(image)
+            image = image / 255
+            image = F.pad(image, padding, mode='constant', value=0.5)
+            image = self.resize(image)
+
+        return image
+
 class DistortImageFolder(data.Dataset):
-    def __init__(self, root, methods, avoid_subfolder, transform=None, loader=default_loader):
+    def __init__(self, root, methods, avoid_subfolder, transform=True, loader=default_loader, debug=False):
         self.root = root
         self.methods = methods
         self.transform = transform
         self.loader = loader
         self.avoid_subfolder = os.path.abspath(avoid_subfolder)
+        self.debug = debug
+        self.resize = transforms.Resize((IMG_SIZE, IMG_SIZE))
 
         #self.image_paths = [os.path.join(root, f) for f in os.listdir(root) if os.path.isfile(os.path.join(root, f))]
         self.image_paths = []
@@ -112,7 +158,6 @@ class DistortImageFolder(data.Dataset):
         original_image = self.loader(image_path)
 
         method_name, method = random.choice(list(self.methods.items()))
-        print(method_name)
 
         corrupted_image = method(original_image, severity=2)
 
@@ -124,20 +169,33 @@ class DistortImageFolder(data.Dataset):
             corrupted_torch = corrupted_torch.permute(2, 0, 1)
             corrupted_torch = corrupted_torch.float() / 255
 
-        # Apply transformation if provided
-        if self.transform is not None:
-            corrupted_image = self.transform(corrupted_image)
+        # Apply padding
+        if self.transform:
+            w, h = corrupted_torch.shape[1], corrupted_torch.shape[2]
+            if h < w: # se verticale
+                padding = ((w - h) // 2, (w - h) - (w - h) // 2, 0, 0)
+            else:     # se orizzontale
+                padding = (0, 0, (h - w) // 2, (h - w) - (h - w) // 2)
 
-        rel_path = os.path.relpath(image_path, self.root)
-        corrupted_image_path = os.path.join("corrupted_dataset_test", rel_path)
-        os.makedirs(os.path.dirname(corrupted_image_path), exist_ok=True)
+            corrupted_torch = F.pad(corrupted_torch, padding, mode='constant', value=0.5)
+            corrupted_torch = self.resize(corrupted_torch)
 
-        torchvision.utils.save_image(corrupted_torch, corrupted_image_path)
+        if self.debug and idx % 100 == 0:
+            print(idx, method_name)
+            rel_path = os.path.relpath(image_path, self.root)
+            corrupted_image_path = os.path.join("corrupted_dataset_debug", rel_path)
+            os.makedirs(os.path.dirname(corrupted_image_path), exist_ok=True)
+            torchvision.utils.save_image(corrupted_torch, corrupted_image_path)
 
         return corrupted_torch
 
+
+
 if __name__ == "__main__":
-    
+
+    _ = torch.manual_seed(123)
+    fid = FrechetInceptionDistance(feature=64)
+
     d = collections.OrderedDict()
     d['Gaussian Noise'] = gaussian_noise
     d['Shot Noise'] = shot_noise
@@ -160,11 +218,46 @@ if __name__ == "__main__":
     d['Spatter'] = spatter
     d['Saturate'] = saturate
 
+    original_dataset = Read_Dataset(
+        root="/home/e3da/code/validate_robustness/recipes/object_detection/datasets/VOC/images",
+        avoid_subfolder="/home/e3da/code/validate_robustness/recipes/object_detection/datasets/VOC/images/VOCdevkit",
+    )
 
-    distorted_dataset = DistortImageFolder(
+    corrupted_dataset = DistortImageFolder(
         root="/home/e3da/code/micromind/recipes/object_detection/datasets/VOC/images", 
         methods=d, 
         avoid_subfolder="/home/e3da/code/micromind/recipes/object_detection/datasets/VOC/images/VOCdevkit/", 
     )
 
-    for _ in distorted_dataset: pass
+    original_data_loader = data.DataLoader(
+        original_dataset, batch_size=100, shuffle=False, num_workers=4
+    )
+    corrupted_data_loader = data.DataLoader(
+        corrupted_dataset, batch_size=100, shuffle=False, num_workers=4
+    )
+
+    original_batch = next(iter(original_data_loader))
+    corrupted_batch = next(iter(corrupted_data_loader))
+    print("batch shape original: ", original_batch.shape)
+    print("batch shape original: ", corrupted_batch.shape)
+    print("numero batch nel data loader: ", len(original_data_loader))
+
+    #save_image(original_batch, "original_batch.jpg")
+    #save_image(corrupted_batch, "corrupted_batch.jpg")
+
+    fids = []
+    for _ in range(len(corrupted_data_loader)):
+        original_batch = next(iter(original_data_loader))
+        corrupted_batch = next(iter(corrupted_data_loader))
+
+        original_batch = (original_batch * 255).to(torch.uint8)
+        corrupted_batch = (corrupted_batch * 255).to(torch.uint8)
+
+        fid.update(original_batch, real=True)
+        fid.update(corrupted_batch, real=False)
+        fid_value = fid.compute()
+        fids.append(fid_value.item())
+        print(fid_value)
+    
+    mean_fid = sum(fids) / len(fids)
+    print("FID: ", mean_fid)
