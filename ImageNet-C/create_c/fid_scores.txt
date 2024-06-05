@@ -1,0 +1,8 @@
+DATASET: VOC
+
+Severity: 0, Mean FID: 13.5915
+Severity: 1, Mean FID: 0.5742
+Severity: 2, Mean FID: 1.8413
+Severity: 3, Mean FID: 4.4179
+Severity: 4, Mean FID: 8.6408
+Severity: 5, Mean FID: 13.5939
